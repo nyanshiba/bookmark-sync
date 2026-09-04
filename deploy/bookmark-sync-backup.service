@@ -1,0 +1,24 @@
+[Unit]
+Description=bookmark-sync: linkding data backup (rsync mirror)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+# 手順: 1) linkding コンテナを停止 → 2) rsync ミラー → 3) コンテナを再開
+#
+# コンテナを止めてからコピーするのは、稼働中の SQLite を直接コピーすると
+# 書き込み途中のファイルが保存され不整合になるため。停止により一貫性を保証する。
+#
+# 再開は ExecStopPost に置く。ExecStopPost はサービスが成功しても失敗しても
+# 必ず実行されるため、rsync が失敗（ディスク容量不足など）しても
+# linkding が落ちたままになることはない。
+
+# 注意: 以下の絶対パス（docker ディレクトリ）は環境に合わせて編集すること。
+#       /home/your-user を実ユーザー名に置き換える。
+ExecStartPre=-/usr/bin/docker compose -f /home/your-user/src/bookmark-sync/docker/docker-compose.yml stop
+ExecStart=/usr/bin/rsync -a --delete /home/your-user/src/bookmark-sync/docker/linkding-data/ /home/bookmark-sync/backup/
+ExecStopPost=-/usr/bin/docker compose -f /home/your-user/src/bookmark-sync/docker/docker-compose.yml start
+
+[Install]
+WantedBy=multi-user.target

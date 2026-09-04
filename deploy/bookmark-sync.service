@@ -1,0 +1,19 @@
+[Unit]
+Description=bookmark-sync: Firefox Sync tabs -> linkding Inbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 専用ユーザーで実行する（事前に作成: sudo useradd -m bookmark-sync）
+User=bookmark-sync
+Group=bookmark-sync
+# パイプライン本体（ビルド後のバイナリ）
+ExecStart=/home/bookmark-sync/bin/bookmark-sync-sync -config /home/bookmark-sync/.config/bookmark-sync/config.toml
+# タイムアウトを長めに（48,000 件近いタブを処理する場合がある）
+TimeoutStartSec=3600
+# 失敗しても systemd timer が次の機会に再実行する
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

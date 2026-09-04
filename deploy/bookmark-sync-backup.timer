@@ -1,0 +1,13 @@
+[Unit]
+Description=Run linkding backup periodically (daily)
+
+[Timer]
+# 毎日 4:00 に実行（linkding の利用が少ない時間帯）
+OnCalendar=*-*-* 04:00
+# 電源オフ中に逃した実行は、次回起動後に補完する
+Persistent=true
+# 乱打防止のためランダム遅延（0-5 分）
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

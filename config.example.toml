@@ -1,0 +1,62 @@
+# bookmark-sync 設定ファイル
+# コピー先: ~/.config/bookmark-sync/config.toml
+
+[linkding]
+# linkding のベース URL。
+# パイプライン（bookmark-sync-sync / bookmark-sync-import）は linkding と
+# 同じ Linux サーバー上で動くので、localhost が最も堅牢（DNS 非依存）。
+# 別マシンから API を叩く場合のみ、ドメイン名に変更する。
+base_url = "http://localhost:9090"
+# linkding の「設定 → APIトークン」で発行したトークン
+api_token = "YOUR_LINKDING_API_TOKEN"
+
+[llm]
+# 明示的に有効化する場合は enabled = true にする。
+# 無効時は要約・タグ生成を一切行わず、タイトル + URL + inbox タグだけで保存する。
+# 既定（省略時）は false（無効）。
+enabled = true
+
+# 機能ごとにプロバイダを差し替えられる。
+# ローカルは llama.cpp (llama-server) の OpenAI 互換エンドポイント。
+
+# 要約プロンプト（{{.Title}} / {{.URL}} が置換される）
+summarize_prompt = """
+You are a helpful assistant. Summarize the following web page in one or two sentences in Japanese. Focus on what makes it worth bookmarking.
+
+Title: {{.Title}}
+URL: {{.URL}}
+
+Summary:"""
+
+# タグ生成プロンプト（{{.Title}} / {{.URL}} / {{.Summary}} が置換される）
+tag_prompt = """
+You are a helpful assistant. Generate 2-5 relevant tags for the following web page. Tags should be single words or short phrases in Japanese. Return them as a comma-separated list.
+
+Title: {{.Title}}
+URL: {{.URL}}
+Summary: {{.Summary}}
+
+Tags:"""
+
+# 要約用プロバイダ
+[llm.summarize]
+base_url = "http://127.0.0.1:8080/v1"   # llama-server のデフォルト
+api_key = ""                            # ローカルは空でOK
+model = "llama-3.1-8b"
+
+# タグ生成用プロバイダ（別プロバイダを指定してもよい）
+[llm.tag]
+base_url = "http://127.0.0.1:8080/v1"
+api_key = ""
+model = "llama-3.1-8b"
+
+[sync]
+# ffsclient (Mikescher/firefox-sync-client) の絶対パス（推奨）またはコマンド名
+# systemd サービスから実行する場合は絶対パスが確実
+firefox_sync_cli = "/home/bookmark-sync/bin/ffsclient"
+
+[filter]
+# 取り込みから除外するドメイン（サフィックス一致: example.com で sub.example.com も除外）
+blocked_domains = []
+# 例:
+# blocked_domains = ["news.example.com", "search.example.net"]

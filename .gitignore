@@ -1,0 +1,12 @@
+# Build output
+/build/
+
+# Local configs and secrets
+# Templates remain tracked; real local files stay untracked.
+/config.toml
+/docker/docker.env
+
+# Local linkding state, exports, backups, and session snapshots
+/docker/linkding-data/
+*.jsonlz4
+*.html

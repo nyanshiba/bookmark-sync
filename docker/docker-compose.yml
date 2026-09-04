@@ -1,0 +1,18 @@
+services:
+  linkding:
+    container_name: linkding
+    image: sissbruecker/linkding:latest
+    restart: unless-stopped
+    # 環境変数は .env ファイル（このディレクトリの docker.env）で管理する
+    env_file:
+      - docker.env
+    ports:
+      # 全インタフェースで listen（linkding.home.arpa 等のドメイン名でアクセスするため）
+      # セキュリティが必要なら外部の nginx/Caddy でリバースプロキシし、そちらで TLS を終端する
+      - "9090:9090"
+    volumes:
+      # データ（SQLite DB・アップロード）のみを永続化する。
+      # ホスト側 ./linkding-data をコンテナの /etc/linkding/data にマウントする。
+      # 注意: /etc/linkding 直下をマウントするとアプリ本体（bootstrap.sh）を覆い隠して
+      #       "exec: ./bootstrap.sh: no such file" エラーになる
+      - ./linkding-data:/etc/linkding/data
