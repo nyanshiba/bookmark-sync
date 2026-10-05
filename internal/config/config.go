@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"bookmark-sync/internal/expand"
 )
 
 // Config is the root configuration structure.
@@ -15,6 +17,7 @@ type Config struct {
 	LLM      LLMConfig      `toml:"llm"`
 	Sync     SyncConfig     `toml:"sync"`
 	Filter   FilterConfig   `toml:"filter"`
+	Expand   ExpandConfig   `toml:"expand"`
 }
 
 // LinkdingConfig holds the connection settings for the linkding instance.
@@ -49,6 +52,15 @@ type SyncConfig struct {
 // FilterConfig holds filtering rules.
 type FilterConfig struct {
 	BlockedDomains []string `toml:"blocked_domains"`
+}
+
+// ExpandConfig controls short-URL expansion inside bookmark titles.
+// Enabled by default; only titles containing a listed shortener host
+// trigger an outbound request.
+type ExpandConfig struct {
+	Enabled     bool     `toml:"enabled"`
+	TimeoutSecs int      `toml:"timeout_secs"`
+	Hosts       []string `toml:"hosts"`
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
@@ -86,6 +98,11 @@ Tags:`,
 		},
 		Filter: FilterConfig{
 			BlockedDomains: []string{},
+		},
+		Expand: ExpandConfig{
+			Enabled:     true,
+			TimeoutSecs: 10,
+			Hosts:       expand.DefaultHosts,
 		},
 	}
 }

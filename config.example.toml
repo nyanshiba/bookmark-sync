@@ -58,3 +58,14 @@ firefox_sync_cli = "/home/bookmark-sync/bin/ffsclient"
 [filter]
 # 取り込みから除外するドメイン（サフィックス一致: example.com で sub.example.com も除外）
 blocked_domains = ["home.arpa","internal","google.com","dash.cloudflare.com","workers.dev"]
+
+[expand]
+# タイトル中の短縮 URL（t.co）を展開して置き換える。
+# t.co の Location ヘッダを1ホップだけ読む（再帰的に辿らない）。
+# 短縮ドメインを含むタイトルのみ外部へ問い合わせる（それ以外は無通信）。
+# 無効化する場合は enabled = false。
+enabled = true
+# 展開1件あたりのタイムアウト（秒）
+timeout_secs = 10
+# 展開対象の短縮ドメインホスト（既定は t.co のみ）
+# hosts = ["t.co"]

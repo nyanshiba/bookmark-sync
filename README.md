@@ -20,6 +20,7 @@ Firefox Sync (Windows + iOS)
   ▼  ffsclient (Mikescher/firefox-sync-client)
 bookmark-sync-sync (Go)
   ├── URL 正規化・重複排除（一覧 API で一括取得、ローカル判定）
+  ├── タイトル内の短縮 URL 展開（t.co）
   ├── ドメインブロックリスト
   ├── LLM 要約（ローカル llama.cpp / クラウド / 機能別切替）
   └── linkding API → 📥Inbox
@@ -84,6 +85,26 @@ sudo systemctl enable --now bookmark-sync.timer
    - **捨てる**: 削除
 4. ブラウザに戻って Firefox View の「他デバイスのタブ」から開いているタブを一括クローズ（Inbox に保全済みなので安心）
 
+### 手動ブックマーク（ブックマークレット）
+
+sync の取り込みを待たずに手動で Inbox へ入れたい場合、以下のブックマークレットを使う。
+`LINKDING_URL` はブラウザから開く linkding の URL（例: `http://linkding.home.arpa:9090`）に置き換える。
+ブックマークバーに新規ブックマークを作り、URL 欄に貼り付ける。
+
+基本版（URL + タイトル + 保存後の自動クローズ）:
+
+```javascript
+javascript:void(function(){location.href='LINKDING_URL/bookmarks/new?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)+'&auto_close'})()
+```
+
+選択テキストを説明として送る版（引用したい箇所を選択してから実行、最大 500 文字）:
+
+```javascript
+javascript:void(function(){var d=window.getSelection().toString();location.href='LINKDING_URL/bookmarks/new?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)+'&description='+encodeURIComponent(d.substring(0,500))+'&auto_close'})()
+```
+
+手動追加したタイトル中の短縮 URL（t.co）は、毎日 5:00 実行の展開ジョブが自動で展開する（SETUP.md 13.7 参照）。
+
 ## プロジェクト構成
 
 ```
@@ -94,11 +115,13 @@ bookmark-sync/
 ├─ cmd/
 │   ├─ import/main.go             # 既存ブックマーク取り込み（一度きり）
 │   ├─ restore-tabs/main.go       # sessionstore → linkding 復元（一度きり）
+│   ├─ expand-titles/main.go      # 既存タイトル内の短縮 URL 展開（一度きり）
 │   └─ sync/main.go               # 定期パイプライン
 ├─ internal/
 │   ├─ config/config.go           # TOML 設定読み込み
 │   ├─ linkding/client.go         # linkding REST API クライアント
 │   ├─ normalize/url.go           # URL 正規化・重複排除
+│   ├─ expand/expand.go             # タイトル内の短縮 URL 展開
 │   ├─ llm/provider.go            # LLM OpenAI 互換クライアント
 │   ├─ filter/filter.go           # ドメインブロックリスト
 │   ├─ bookmark/parser.go         # Netscape HTML 解析
@@ -109,6 +132,8 @@ bookmark-sync/
 └─ deploy/
     ├─ bookmark-sync.service      # systemd oneshot（sync）
     ├─ bookmark-sync.timer        # systemd timer（1時間ごと）
+    ├─ bookmark-sync-expand-titles.service  # systemd oneshot（既存タイトル展開）
+    ├─ bookmark-sync-expand-titles.timer    # systemd timer（毎日 5:00）
     ├─ bookmark-sync-backup.service  # systemd oneshot（linkding 停止 → rsync → 再開）
     └─ bookmark-sync-backup.timer    # systemd timer（毎日 4:00）
 ```

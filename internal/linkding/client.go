@@ -109,6 +109,71 @@ func (c *Client) ListBookmarkURLs() (map[string]bool, error) {
 	return urls, nil
 }
 
+// ListBookmarks returns all bookmarks (both active and archived) with the
+// fields needed for title maintenance: id, url, title.
+func (c *Client) ListBookmarks() ([]Bookmark, error) {
+	var out []Bookmark
+	for _, path := range []string{"/api/bookmarks/", "/api/bookmarks/archived/"} {
+		page, err := c.fetchBookmarkPages(path, url.Values{})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+	}
+	return out, nil
+}
+
+// SearchBookmarks returns bookmarks (both active and archived) matching any
+// of the given queries, deduplicated by id. Each query is passed as the list
+// API's q parameter, so filtering happens server-side — callers fetch only
+// candidates instead of the whole collection.
+func (c *Client) SearchBookmarks(queries []string) ([]Bookmark, error) {
+	var out []Bookmark
+	seen := map[int64]bool{}
+	for _, q := range queries {
+		if q == "" {
+			continue
+		}
+		for _, path := range []string{"/api/bookmarks/", "/api/bookmarks/archived/"} {
+			page, err := c.fetchBookmarkPages(path, url.Values{"q": {q}})
+			if err != nil {
+				return nil, err
+			}
+			for _, b := range page {
+				if !seen[b.ID] {
+					seen[b.ID] = true
+					out = append(out, b)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) fetchBookmarkPages(path string, query url.Values) ([]Bookmark, error) {
+	var out []Bookmark
+	offset := 0
+	for {
+		query.Set("limit", "100")
+		query.Set("offset", strconv.Itoa(offset))
+		u := c.baseURL + path + "?" + query.Encode()
+
+		var page struct {
+			Results []Bookmark `json:"results"`
+			Next    string     `json:"next"`
+		}
+		if err := c.get(u, &page); err != nil {
+			return nil, err
+		}
+		out = append(out, page.Results...)
+		if page.Next == "" || len(page.Results) == 0 {
+			break
+		}
+		offset += len(page.Results)
+	}
+	return out, nil
+}
+
 // Create creates a new bookmark via POST /api/bookmarks/.
 // The disable_scraping query parameter tells linkding not to fetch the
 // target URL's metadata, so creating a bookmark never triggers an outbound
@@ -117,14 +182,11 @@ func (c *Client) Create(b Bookmark) (*Bookmark, error) {
 	// linkding rejects titles longer than maxTitleLen code points with a 400
 	// ("Ensure this field has no more than 512 characters."). Truncate the
 	// tail and tag the bookmark so the truncation is visible in linkding.
-	if n := utf8.RuneCountInString(b.Title); n > maxTitleLen {
-		b.Title = string([]rune(b.Title)[:maxTitleLen])
+	truncated := utf8.RuneCountInString(b.Title) > maxTitleLen
+	b.Title = fitTitle(b.Title)
+	if truncated {
 		b.TagNames = append(b.TagNames, tagTitleTruncated)
 	}
-
-	// linkding rejects NUL characters ("Null characters are not allowed.").
-	// Firefox Sync tab titles occasionally carry a NUL byte; strip it.
-	b.Title = strings.ReplaceAll(b.Title, "\x00", "")
 	b.Description = strings.ReplaceAll(b.Description, "\x00", "")
 
 	u := c.baseURL + "/api/bookmarks/?" + url.Values{"disable_scraping": {""}}.Encode()
@@ -157,6 +219,52 @@ func (c *Client) Create(b Bookmark) (*Bookmark, error) {
 		return nil, fmt.Errorf("decode created bookmark: %w", err)
 	}
 	return &created, nil
+}
+
+// UpdateTitle patches only the title of an existing bookmark via
+// PATCH /api/bookmarks/{id}/. Sending just the title field (and nothing
+// else) guarantees tags, notes, and dates are left untouched.
+func (c *Client) UpdateTitle(id int64, title string) (*Bookmark, error) {
+	body, err := json.Marshal(map[string]string{"title": fitTitle(title)})
+	if err != nil {
+		return nil, fmt.Errorf("marshal title: %w", err)
+	}
+	u := fmt.Sprintf("%s/api/bookmarks/%d/", c.baseURL, id)
+
+	resp, err := c.doRetry(func() (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPatch, u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		c.authorize(req)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update title: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("update title: unexpected status %d: %s", resp.StatusCode, msg)
+	}
+
+	var updated Bookmark
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		return nil, fmt.Errorf("decode updated bookmark: %w", err)
+	}
+	return &updated, nil
+}
+
+// fitTitle strips NUL bytes (rejected by linkding with a 400) and truncates
+// to linkding's 512 code point title limit.
+func fitTitle(title string) string {
+	title = strings.ReplaceAll(title, "\x00", "")
+	if n := utf8.RuneCountInString(title); n > maxTitleLen {
+		title = string([]rune(title)[:maxTitleLen])
+	}
+	return title
 }
 
 // Update patches an existing bookmark via PATCH /api/bookmarks/{id}/.

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run linkding title expansion periodically (daily)
+
+[Timer]
+# 毎日 5:00 に実行（手動追加分の短縮 URL を拾う）
+OnCalendar=*-*-* 05:00
+# 電源オフ中に逃した実行は、次回起動後に補完する
+Persistent=true
+# sync との同時実行をずらす（ランダム遅延 0-5 分）
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

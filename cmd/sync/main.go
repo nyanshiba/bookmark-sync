@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"bookmark-sync/internal/config"
+	"bookmark-sync/internal/expand"
 	"bookmark-sync/internal/filter"
 	"bookmark-sync/internal/linkding"
 	"bookmark-sync/internal/llm"
@@ -57,6 +58,7 @@ func main() {
 
 	client := linkding.New(cfg.Linkding.BaseURL, cfg.Linkding.APIToken)
 	domainFilter := filter.New(cfg.Filter.BlockedDomains)
+	expander := expand.New(cfg.Expand.Hosts, time.Duration(cfg.Expand.TimeoutSecs)*time.Second)
 
 	// Dedup: load the set of existing bookmark URLs up front.
 	// IMPORTANT: we deliberately do NOT use the linkding /check API, because it
@@ -121,6 +123,12 @@ func main() {
 		title := tab.Title
 		if title == "" {
 			title = norm
+		}
+		if cfg.Expand.Enabled {
+			if expanded := expander.Title(title); expanded != title {
+				log.Printf("  expanded short URL in title: %q -> %q", title, expanded)
+				title = expanded
+			}
 		}
 		b := linkding.Bookmark{
 			URL:      norm,

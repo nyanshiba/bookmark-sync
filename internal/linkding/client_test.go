@@ -124,6 +124,97 @@ func TestCreateStripsNUL(t *testing.T) {
 	}
 }
 
+// TestListBookmarks verifies that ListBookmarks returns id/url/title across
+// both active and archived endpoints with pagination.
+func TestListBookmarks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset := r.URL.Query().Get("offset")
+		if offset == "0" {
+			w.Write([]byte(`{"results":[{"id":7,"url":"https://example.com/","title":"Example"}],"next":"` + r.URL.Path + `?limit=100&offset=100"}`))
+		} else {
+			w.Write([]byte(`{"results":[],"next":""}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	got, err := c.ListBookmarks()
+	if err != nil {
+		t.Fatalf("ListBookmarks: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 bookmarks (active + archived), got %d", len(got))
+	}
+	if got[0].ID != 7 || got[0].URL != "https://example.com/" || got[0].Title != "Example" {
+		t.Errorf("bookmark[0] = %+v", got[0])
+	}
+}
+
+// TestSearchBookmarks verifies server-side q filtering: the query is
+// forwarded to both endpoints, and overlapping results across queries are
+// deduplicated by id.
+func TestSearchBookmarks(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		w.Write([]byte(`{"results":[{"id":7,"url":"https://example.com/","title":"t.co link"}],"next":""}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	got, err := c.SearchBookmarks([]string{"t.co", "bit.ly"})
+	if err != nil {
+		t.Fatalf("SearchBookmarks: %v", err)
+	}
+
+	if len(queries) != 4 {
+		t.Fatalf("expected 4 requests (2 queries x 2 endpoints), got %v", queries)
+	}
+	for _, q := range queries {
+		if q != "t.co" && q != "bit.ly" {
+			t.Errorf("unexpected q param %q", q)
+		}
+	}
+	if len(got) != 1 || got[0].ID != 7 {
+		t.Errorf("expected 1 deduplicated bookmark, got %+v", got)
+	}
+}
+
+// TestUpdateTitleSendsTitleOnly verifies that UpdateTitle PATCHes just the
+// title field (so tags, notes, and dates survive) and truncates overlong
+// titles to linkding's 512 code point limit.
+func TestUpdateTitleSendsTitleOnly(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Write([]byte(`{"id":7,"title":"ok"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	longTitle := strings.Repeat("あ", 600)
+	if _, err := c.UpdateTitle(7, longTitle); err != nil {
+		t.Fatalf("UpdateTitle: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 field in PATCH body, got %v", got)
+	}
+	title, ok := got["title"].(string)
+	if !ok {
+		t.Fatalf("title field missing or not a string: %v", got)
+	}
+	if n := utf8.RuneCountInString(title); n != maxTitleLen {
+		t.Errorf("title rune count = %d, want %d", n, maxTitleLen)
+	}
+}
+
 // TestListBookmarkURLs verifies that ListBookmarkURLs paginates correctly
 // across both active and archived endpoints without scraping URLs.
 func TestListBookmarkURLs(t *testing.T) {

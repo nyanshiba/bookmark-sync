@@ -276,6 +276,7 @@ sudo -u bookmark-sync editor /home/bookmark-sync/.config/bookmark-sync/config.to
 | `sync.firefox_sync_cli` | ffsclient の絶対パス | `/home/bookmark-sync/bin/ffsclient` |
 | `llm.enabled` | LLM を使う場合は `true`（既定は `false`、無効） | `true` |
 | `filter.blocked_domains` | 取り込み除外ドメイン（必要なら） | `["twitter.com", "youtube.com"]` |
+| `expand.enabled` | タイトル中の短縮 URL 展開（既定は `true`、有効） | `false` |
 
 ### 5.2 LLM プロバイダの設定
 
@@ -656,6 +657,10 @@ grep -n your-user deploy/bookmark-sync-backup.service
 sudo cp deploy/bookmark-sync-backup.service /etc/systemd/system/
 sudo cp deploy/bookmark-sync-backup.timer /etc/systemd/system/
 
+# expand-titles ユニット
+sudo cp deploy/bookmark-sync-expand-titles.service /etc/systemd/system/
+sudo cp deploy/bookmark-sync-expand-titles.timer /etc/systemd/system/
+
 sudo systemctl daemon-reload
 ```
 
@@ -943,3 +948,69 @@ sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-restore-tabs \
 - `-dry-run` を付けると何も書き込まずに追加予定だけ表示する
 - 書き込み後も通常の `bookmark-sync-sync`（timer）が重複を作らない
   （URL ベースの重複排除）
+
+### 13.7 既存タイトル内の短縮 URL を展開する
+
+`sync` / `restore-tabs` は取り込み時にタイトル中の短縮 URL（t.co 等）を
+展開しますが、それ以前に登録されたブックマークは生の短縮リンクのままです。
+`bookmark-sync-expand-titles` で既存分を遡って展開します。
+title フィールドのみを PATCH するため、タグ・メモ・日付は変わりません。
+
+```bash
+cd bookmark-sync
+make build
+
+# バイナリを配置（未導入なら）
+sudo cp build/bookmark-sync-expand-titles /home/bookmark-sync/bin/
+sudo chown bookmark-sync:bookmark-sync /home/bookmark-sync/bin/bookmark-sync-expand-titles
+
+# 先に dry-run で対象を確認
+sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-expand-titles \
+  -config /home/bookmark-sync/.config/bookmark-sync/config.toml \
+  -dry-run
+
+# 本実行
+sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-expand-titles \
+  -config /home/bookmark-sync/.config/bookmark-sync/config.toml
+
+# 実行例（ログ）
+# loaded 48213 bookmark(s)
+#   [12345] updated "…https://t.co/e5ixolJmWp…" -> "…https://www.hacktron.ai/blog/hacking-openai…"
+# done: 312 updated, 47901 skipped, 0 failed
+```
+
+動作の要点:
+- linkding の一覧 API の `q` 検索で短縮ドメイン含みだけをサーバー側で絞る
+ （`hosts` のホストごとに問い合わせて id で重複排除）。全件取得はしない
+- 短縮ドメインを含まないタイトルは一覧取得のみで外部通信しない
+- 展開に失敗したタイトル（削除済みリンク等）は元のままスキップ
+- 展開後のタイトルが 512 文字を超える場合は末尾を切り詰める（`sync` と同じ扱い）
+
+### 13.8 展開ジョブの定期実行（ブックマークレット対応）
+
+ブックマークレットからの手動追加は linkding へ直書きされるため、
+`sync` の取り込み時展開をすり抜けます。`expand-titles` を timer で
+毎日実行すれば、手動追加分も自動で展開されます（ブックマークレット側の
+JavaScript では CORS のため t.co を解決できないので、サーバー側で担う構成）。
+
+```bash
+# ユニットを配置
+sudo cp ~/src/bookmark-sync/deploy/bookmark-sync-expand-titles.service /etc/systemd/system/
+sudo cp ~/src/bookmark-sync/deploy/bookmark-sync-expand-titles.timer /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/bookmark-sync-expand-titles.*
+sudo systemctl daemon-reload
+
+# 有効化（毎日 5:00 + ランダム遅延 0-5 分）
+sudo systemctl enable --now bookmark-sync-expand-titles.timer
+
+# 3つのタイマーの次回実行予定を確認
+systemctl list-timers --all | grep bookmark-sync
+```
+
+手動での試運転とログ確認:
+
+```bash
+sudo systemctl start bookmark-sync-expand-titles.service
+journalctl -u bookmark-sync-expand-titles.service --since "5 min ago" --no-pager
+# 対象が無ければ "found 0 candidate(s)" → "done: 0 updated, 0 skipped, 0 failed"
+```
