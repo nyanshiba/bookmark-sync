@@ -14,7 +14,7 @@ import (
 // Config is the root configuration structure.
 type Config struct {
 	Linkding LinkdingConfig `toml:"linkding"`
-	LLM      LLMConfig      `toml:"llm"`
+	Clef     ClefConfig     `toml:"clef"`
 	Sync     SyncConfig     `toml:"sync"`
 	Filter   FilterConfig   `toml:"filter"`
 	Expand   ExpandConfig   `toml:"expand"`
@@ -26,22 +26,21 @@ type LinkdingConfig struct {
 	APIToken string `toml:"api_token"`
 }
 
-// ProviderConfig represents a single LLM provider (OpenAI-compatible).
-type ProviderConfig struct {
-	BaseURL string `toml:"base_url"` // e.g. http://127.0.0.1:8080/v1
-	APIKey  string `toml:"api_key"`  // may be empty for local llama.cpp
-	Model   string `toml:"model"`    // e.g. llama-3.1-8b, gpt-4o-mini
-}
-
-// LLMConfig holds per-function provider assignments and prompts.
-// Enabled is opt-in: default is false. When disabled, LLM calls are
-// skipped entirely (title + URL + inbox tag only).
-type LLMConfig struct {
-	Enabled         bool           `toml:"enabled"` // default: false (opt-in)
-	Summarize       ProviderConfig `toml:"summarize"`
-	Tag             ProviderConfig `toml:"tag"`
-	SummarizePrompt string         `toml:"summarize_prompt"`
-	TagPrompt       string         `toml:"tag_prompt"`
+// ClefConfig holds the tag classifier assignment.
+// Enabled is opt-in: default is false. When disabled, classification is
+// skipped entirely (title + URL + inbox tag only). The classifier never
+// creates new tags: it picks the nearest one from the existing linkding tags.
+type ClefConfig struct {
+	Enabled      bool   `toml:"enabled"` // default: false (opt-in)
+	AccountID    string `toml:"account_id"`
+	APIToken     string `toml:"api_token"`
+	Model        string `toml:"model"` // "clef-flash" or "clef"
+	Instructions string `toml:"instructions"`
+	// Daily caps shared by sync and the backfill command. A zero value
+	// disables that dimension. Neuron usage is estimated before each call
+	// and debited with reported input tokens after, resetting 00:00 UTC.
+	DailyNeuronBudget  int `toml:"daily_neuron_budget"`
+	DailyRequestBudget int `toml:"daily_request_budget"`
 }
 
 // SyncConfig holds settings for the Sync pipeline.
@@ -69,29 +68,12 @@ func DefaultConfig() Config {
 		Linkding: LinkdingConfig{
 			BaseURL: "http://localhost:9090",
 		},
-		LLM: LLMConfig{
-			Enabled: false,
-			Summarize: ProviderConfig{
-				BaseURL: "http://127.0.0.1:8080/v1",
-				Model:   "llama-3.1-8b",
-			},
-			Tag: ProviderConfig{
-				BaseURL: "http://127.0.0.1:8080/v1",
-				Model:   "llama-3.1-8b",
-			},
-			SummarizePrompt: `You are a helpful assistant. Summarize the following web page in one or two sentences in Japanese. Focus on what makes it worth bookmarking.
-
-Title: {{.Title}}
-URL: {{.URL}}
-
-Summary:`,
-			TagPrompt: `You are a helpful assistant. Generate 2-5 relevant tags for the following web page. Tags should be single words or short phrases in Japanese. Return them as a comma-separated list.
-
-Title: {{.Title}}
-URL: {{.URL}}
-Summary: {{.Summary}}
-
-Tags:`,
+		Clef: ClefConfig{
+			Enabled:            false,
+			Model:              "clef-flash",
+			Instructions:       `Pick the single tag whose meaning is closest to this bookmark. Answer with the nearest existing tag only.`,
+			DailyNeuronBudget:  9000,
+			DailyRequestBudget: 0,
 		},
 		Sync: SyncConfig{
 			FirefoxSyncCLI: "/home/bookmark-sync/bin/ffsclient",

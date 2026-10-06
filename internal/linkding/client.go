@@ -74,7 +74,7 @@ func New(baseURL, token string) *Client {
 // IMPORTANT: this is the safe way to deduplicate. The /api/bookmarks/check/
 // endpoint fetches each URL's website metadata via requests.get(), so calling
 // it per-tab generates outbound traffic to every bookmarked site — unrelated
-// to whether LLM is enabled. The list API only queries the database and never
+// to whether classification is enabled. The list API only queries the database and never
 // touches the external URLs.
 func (c *Client) ListBookmarkURLs() (map[string]bool, error) {
 	urls := map[string]bool{}
@@ -107,6 +107,80 @@ func (c *Client) ListBookmarkURLs() (map[string]bool, error) {
 		}
 	}
 	return urls, nil
+}
+
+// ListTags returns all tag names owned by the linkding user, via the
+// paginated /api/tags/ endpoint.
+func (c *Client) ListTags() ([]string, error) {
+	var out []string
+	offset := 0
+	for {
+		u := c.baseURL + "/api/tags/?" + url.Values{
+			"limit":  {"100"},
+			"offset": {strconv.Itoa(offset)},
+		}.Encode()
+
+		var page struct {
+			Results []struct {
+				Name string `json:"name"`
+			} `json:"results"`
+			Next string `json:"next"`
+		}
+		if err := c.get(u, &page); err != nil {
+			return nil, err
+		}
+		for _, t := range page.Results {
+			if t.Name != "" {
+				out = append(out, t.Name)
+			}
+		}
+		if page.Next == "" || len(page.Results) == 0 {
+			break
+		}
+		offset += len(page.Results)
+	}
+	return out, nil
+}
+
+// ScanRecent returns up to n bookmarks satisfying keep, newest first. The
+// list API orders by -date_added, so paging from offset 0 and stopping early
+// avoids scanning the whole collection when recent items match. Active is
+// scanned before archived; archived only tops up when active falls short.
+func (c *Client) ScanRecent(n int, keep func(Bookmark) bool) ([]Bookmark, error) {
+	var out []Bookmark
+	for _, path := range []string{"/api/bookmarks/", "/api/bookmarks/archived/"} {
+		offset := 0
+		for len(out) < n {
+			u := c.baseURL + path + "?" + url.Values{
+				"limit":  {"100"},
+				"offset": {strconv.Itoa(offset)},
+			}.Encode()
+
+			var page struct {
+				Results []Bookmark `json:"results"`
+				Next    string     `json:"next"`
+			}
+			if err := c.get(u, &page); err != nil {
+				return nil, err
+			}
+			for _, b := range page.Results {
+				if keep(b) {
+					out = append(out, b)
+					if len(out) >= n {
+						break
+					}
+				}
+			}
+			if page.Next == "" || len(page.Results) == 0 {
+				break
+			}
+			offset += len(page.Results)
+		}
+		if len(out) >= n {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ListBookmarks returns all bookmarks (both active and archived) with the
@@ -248,6 +322,43 @@ func (c *Client) UpdateTitle(id int64, title string) (*Bookmark, error) {
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("update title: unexpected status %d: %s", resp.StatusCode, msg)
+	}
+
+	var updated Bookmark
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		return nil, fmt.Errorf("decode updated bookmark: %w", err)
+	}
+	return &updated, nil
+}
+
+// UpdateTags replaces the tag set of an existing bookmark via
+// PATCH /api/bookmarks/{id}/. Callers must send the full desired set:
+// the API replaces tags instead of merging, so pass existing tags plus
+// any additions.
+func (c *Client) UpdateTags(id int64, tags []string) (*Bookmark, error) {
+	body, err := json.Marshal(map[string][]string{"tag_names": tags})
+	if err != nil {
+		return nil, fmt.Errorf("marshal tags: %w", err)
+	}
+	u := fmt.Sprintf("%s/api/bookmarks/%d/", c.baseURL, id)
+
+	resp, err := c.doRetry(func() (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPatch, u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		c.authorize(req)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update tags: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("update tags: unexpected status %d: %s", resp.StatusCode, msg)
 	}
 
 	var updated Bookmark

@@ -98,8 +98,7 @@ sudo useradd -m -s /usr/sbin/nologin bookmark-sync
 
 # バイナリを配置
 sudo mkdir -p /home/bookmark-sync/bin
-sudo cp build/bookmark-sync-import build/bookmark-sync-restore-tabs \
-        build/bookmark-sync-sync /home/bookmark-sync/bin/
+sudo cp build/* /home/bookmark-sync/bin/
 
 # 設定ディレクトリ
 sudo mkdir -p /home/bookmark-sync/.config
@@ -274,44 +273,90 @@ sudo -u bookmark-sync editor /home/bookmark-sync/.config/bookmark-sync/config.to
 | `linkding.base_url` | linkding のアドレス | `http://localhost:9090` |
 | `linkding.api_token` | 3.2 で発行した API トークン | `xxxxxxxxxxxxx` |
 | `sync.firefox_sync_cli` | ffsclient の絶対パス | `/home/bookmark-sync/bin/ffsclient` |
-| `llm.enabled` | LLM を使う場合は `true`（既定は `false`、無効） | `true` |
+| `clef.enabled` | Clef 分類を使う場合は `true`（既定は `false`、無効） | `true` |
 | `filter.blocked_domains` | 取り込み除外ドメイン（必要なら） | `["twitter.com", "youtube.com"]` |
 | `expand.enabled` | タイトル中の短縮 URL 展開（既定は `true`、有効） | `false` |
 
-### 5.2 LLM プロバイダの設定
+### 5.2 Clef 分類の設定
 
-ローカルに llama.cpp が動いている場合:
+タグ付けは Cloudflare Workers AI の Clef 判定モデルに直結する。
+生成ではなく分類のため、新規タグは作らず、既存タグから最も近いものを一つ付ける。
 
-```toml
-[llm.summarize]
-base_url = "http://127.0.0.1:8080/v1"
-api_key = ""
-model = "llama-3.1-8b"
+`account_id` と `api_token` の取得手順:
 
-[llm.tag]
-base_url = "http://127.0.0.1:8080/v1"
-api_key = ""
-model = "llama-3.1-8b"
-```
-
-クラウド API を使う場合（例: OpenAI）:
+1. Cloudflare ダッシュボード → Workers AI ページを開く
+2. 「Use REST API」を選ぶ
+3. 「Create a Workers AI API Token」→ 内容を確認 → 「Create API Token」
+4. 「Copy API Token」で `api_token` を控える（後からプロフィール画面で再確認可）
+5. 同じ画面の「Get Account ID」の値を `account_id` に控える
 
 ```toml
-[llm.summarize]
-base_url = "https://api.openai.com/v1"
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "gpt-4o-mini"
-
-[llm.tag]
-base_url = "https://api.openai.com/v1"
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "gpt-4o-mini"
+[clef]
+enabled = true
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+api_token = "YOUR_CLOUDFLARE_API_TOKEN"
+model = "clef-flash"
+instructions = "Pick the single tag whose meaning is closest to this bookmark. Answer with the nearest existing tag only."
 ```
 
-> **LLM を使わない場合**:
-> `[llm]` の `enabled` は**既定で `false`（無効）**です。
-> LLM を使う場合は `enabled = true` を設定します。
-> 無効時は要約・タグ生成を一切行わず、タイトルと URL だけ（タグは `inbox` のみ）で保存します。
+手動でトークンを作る場合は Workers AI - Read と Workers AI - Edit の権限が必要。
+トークンは秘密情報のため `config.toml` を他人と共有しないこと。
+`model` は `clef-flash`（9B、速い・安い）または `clef`（27B、高精度）。
+
+#### 分類リクエストの中身
+
+`instructions` にタグ一覧を書く必要はない。タグ一覧は起動時に
+linkding の `/api/tags/` から取得し、Clef の choice 質問の `criteria`
+（選択肢）として別枠で送られる。1リクエストの実形はこうなる:
+
+```json
+{
+  "model": "clef-flash",
+  "state": "Title: example article\nURL: https://example.com/article",
+  "questions": {
+    "q0": {
+      "type": "choice",
+      "instructions": "Pick the single tag whose meaning is closest to this bookmark. …",
+      "criteria": { "tech": null, "life": null }
+    }
+  }
+}
+```
+
+Clef は全選択肢の確率を返し、最大確率のものを採用する。
+choice の選択肢上限は 255 のため、既存タグがそれを超える場合は自動で分割して
+問い合わせ、全体で最大確率のものを採用する。
+
+#### 予算の決め方
+
+#### 予算の決め方
+
+この章では1日の分類上限2つを決める。上限は金額（Neurons）と件数の二本立てで、
+`sync` と遡及コマンドが共有する。使用量は `clef-usage.json` に記録され、
+00:00 UTC にリセットされる。到達時は分類だけ止まり、ブックマーク自体の作成は続く。
+無料枠は 1日10,000 Neurons で、枠超過分だけ $0.011/1,000 Neurons が課金される。
+
+1件あたりの実測（`-eval` 50件のダッシュボード値、単位 Neurons/件）:
+flash 460.01/50 = 9.2/件、clef 1260/50 = 25.2/件。
+式 `1件 = 入力トークン × 単価/100万` に入力約1100トークンを入れると
+flash 1100×8182/100万 ≈ 9.0、clef 1100×21818/100万 ≈ 24.0 で実測と一致する。
+1件値はタグ数で変わるため、自環境では `-eval 50` で確かめる
+（書き込みなし、予算消費あり。ダッシュボードの Neurons/50 が1件値。手順は 13.9）。
+
+| モデル | 1件実測 | `daily_request_budget` | `daily_neuron_budget` | 1万件処理する際のコスト |
+|---|---|---|---|---|
+| `clef-flash` | 9.2 Neurons/件 | 1日件数（例: 980件なら `980`） | 1日件数×9.2（例: `9000`） | 約10日・総額約$1.0 |
+| `clef` | 25.2 Neurons/件 | 1日件数（例: 360件なら `360`） | 1日件数×25.2（例: `9000`） | 約28日・総額約$2.8 |
+
+両方書くと先に達した方が止める。件数だけで縛るなら request 側だけ書く。
+9000も10000（無料枠上限。例: flash 約1090件・約9日、clef 約400件・約25日）も
+無料枠内のため日額は$0。枠超過分だけ課金される
+（例: clef 1万件を1日で処理なら超過約24万 Neurons で約$2.6）。
+
+> **分類を使わない場合**:
+> `[clef]` の `enabled` は**既定で `false`（無効）**です。
+> 分類を使う場合は `enabled = true` を設定します。
+> 無効時はタグ生成を一切行わず、タイトルと URL だけ（タグは `inbox` のみ）で保存します。
 > 最初にパイプラインの動作を確認したい場合は、このまま（無効のまま）動かせます。
 > 後から `enabled = true` を追加するだけです。
 
@@ -454,7 +499,7 @@ import / sync / restore-tabs のいずれも同じ linkding クライアント�
 
 **この章がこのプロジェクトのメイン機能です。**
 `bookmark-sync-sync` は一定間隔ごとに起動し、Firefox Sync の開きタブを取得 →
-LLM で要約・タグ付け → linkding の Inbox に自動投入します。
+Clef で分類 → linkding の Inbox に自動投入します。
 
 > **`bookmark-sync-sync` の入力は `ffsclient tabs list`（開きタブ）だけ**です。
 > Firefox ブックマーク（`ffsclient bookmarks list`）とは比較も同期もしません。
@@ -636,8 +681,7 @@ go mod tidy
 make build
 
 # 全バイナリを配置し直す
-sudo cp build/bookmark-sync-import build/bookmark-sync-restore-tabs \
-        build/bookmark-sync-sync /home/bookmark-sync/bin/
+sudo cp build/* /home/bookmark-sync/bin/
 sudo chown bookmark-sync:bookmark-sync /home/bookmark-sync/bin/bookmark-sync-*
 ```
 
@@ -748,18 +792,18 @@ ffsclient のバージョンを最新にアップデートしてください。
 # 設定 → API トークン → 再作成
 ```
 
-### 12.4 パイプラインが失敗する（LLM エラー）
+### 12.4 パイプラインが失敗する（Clef エラー）
 
-LLM のエンドポイントや API キーが正しくない場合、エラーログが出ますが、
-パイプラインは LLM が失敗してもタイトルと URL だけでリンクディングに保存します。
+Clef のエンドポイントや API トークンが正しくない場合、エラーログが出ますが、
+パイプラインは分類が失敗してもタイトルと URL だけでリンクディングに保存します。
 エラーログの意味を切り分けるには:
 
-- **LLM を一時的に止めたい**: `[llm]` の `enabled = false` にすると、LLM 呼び出し自体を
+- **分類を一時的に止めたい**: `[clef]` の `enabled = false` にすると、分類呼び出し自体を
   スキップしてエラーログも出なくなります（タイトル + URL + inbox タグのみで保存）。
-- **LLM を直したい**: `enabled = true` のまま、`base_url` / `api_key` / `model` を確認します。
-  ローカル llama.cpp なら `curl http://127.0.0.1:8080/v1/models` で応答を確認できます。
+- **Clef を直したい**: `enabled = true` のまま、`account_id` / `api_token` / `model` を確認します。
+  取得手順は 5.2 のとおり。アカウント ID の控え間違いが最多のため先に疑うこと。
 
-後から要約を追加したい場合は、LLM 設定を直して `bookmark-sync-sync` を再実行するか、
+タグが付かない場合は、Clef 設定を直して `bookmark-sync-sync` を再実行するか、
 手動でリンクディングの Web UI から編集してください。
 
 ### 12.5 systemd サービスがタイムアウトする
@@ -954,7 +998,8 @@ sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-restore-tabs \
 `sync` / `restore-tabs` は取り込み時にタイトル中の短縮 URL（t.co 等）を
 展開しますが、それ以前に登録されたブックマークは生の短縮リンクのままです。
 `bookmark-sync-expand-titles` で既存分を遡って展開します。
-title フィールドのみを PATCH するため、タグ・メモ・日付は変わりません。
+title フィールドのみを PATCH するため、タグ・メモ・`date_added` は変わりません
+（`date_modified` のみ linkding の仕様で現在時刻になります）。
 
 ```bash
 cd bookmark-sync
@@ -1014,3 +1059,68 @@ sudo systemctl start bookmark-sync-expand-titles.service
 journalctl -u bookmark-sync-expand-titles.service --since "5 min ago" --no-pager
 # 対象が無ければ "found 0 candidate(s)" → "done: 0 updated, 0 skipped, 0 failed"
 ```
+### 13.9 既存 inbox の遡及分類（バックログ処理）
+
+既存の inbox（内容タグなし）は sync の重複排除で触られないため、
+`bookmark-sync-classify-tags` で遡って分類する。新規タグは作らず、
+既存タグから最も近いものを現タグに追加する（`inbox` は残る）。
+日次予算は sync と共有のため、1万件のバックログは数日に分けて消化する
+（日数の目安は 5.2 の表を参照。古いものから順に処理し、
+中断しても次回は未分類の続きから始まる）。
+
+```bash
+cd bookmark-sync
+make build
+
+# バイナリを配置（未導入なら）
+sudo cp build/bookmark-sync-classify-tags /home/bookmark-sync/bin/
+sudo chown bookmark-sync:bookmark-sync /home/bookmark-sync/bin/bookmark-sync-classify-tags
+
+# 先に dry-run で対象件数を確認（Clef への問い合わせなし）
+sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-classify-tags \
+  -config /home/bookmark-sync/.config/bookmark-sync/config.toml \
+  -dry-run
+
+# 本実行（予算到達で自動停止する。翌日以降に再実行）
+sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-classify-tags \
+  -config /home/bookmark-sync/.config/bookmark-sync/config.toml
+
+# 実行例（ログ）
+# loaded 48 existing tag(s) for classification
+# found 10213 unclassified inbox bookmark(s)
+#   [12345] "Example" -> "tech" (p=0.80)
+# budget exhausted (9005/9000 neurons, 970/0 requests), stopping
+# done: 970 updated, 0 failed (budget: 9005/9000 neurons, 970/0 requests)
+```
+
+#### モデル選定（clef-flash と clef の比較）
+
+どちらがこの用途に良いかは実測で決める。手付け済みタグを正解として
+両モデルに `-eval`（書き込みなし、予算は消費する）をかけて一致率を比べる。
+正解集合は全ブックマーク中のタグ付きのうち、直近の手付け傾向を測るため
+`inbox` を除く最新 N 件だ。inbox+手付けは運用上存在しない
+（残す判断時に `inbox` を外すため）。
+linkding の一覧は既定で新しい順（`-date_added`）のため、先頭から舐めて
+N 件溜まったら打ち切り、全件走査はしない:
+
+```bash
+BIN=/home/bookmark-sync/bin/bookmark-sync-classify-tags
+CFG=/home/bookmark-sync/.config/bookmark-sync/config.toml
+sudo -u bookmark-sync $BIN -config $CFG -eval 50 -model clef-flash
+sudo -u bookmark-sync $BIN -config $CFG -eval 50 -model clef
+# eval (clef-flash): agreement 31/50
+# eval (clef): agreement 38/50
+```
+
+一致率の絶対値ではなく差を見る（手付けの揺れがあるため6〜7割が普通）。
+差が小さければ速い・安い clef-flash、明確に clef が良ければ
+`[clef]` の `model` を `clef` に変える。約28日かかる試算でも新規タブ量なら
+消化後に追いつくため、精度優先で選んでよい。
+```
+
+動作の要点:
+- 既に内容タグを持つものは対象外。分類済みの再判定で予算を消費しない
+- `-limit N` で1回あたりの処理件数を絞れる（予算とは独立した手動分割用）
+- タグ PATCH は全置換のため現タグ全量 + 新タグを送る。タグ・`date_added` の消失は
+  ない（`date_modified` のみ linkding の仕様で現在時刻になる）
+- 予算超過分は課金（単価は 5.2 の表を参照）か翌日回しかを選べる

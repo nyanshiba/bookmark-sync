@@ -181,6 +181,96 @@ func TestSearchBookmarks(t *testing.T) {
 	}
 }
 
+// TestListTags verifies that ListTags paginates /api/tags/ and returns names.
+func TestListTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/tags/") {
+			t.Errorf("path = %s, want /api/tags/", r.URL.Path)
+		}
+		if r.URL.Query().Get("offset") == "0" {
+			w.Write([]byte(`{"results":[{"id":1,"name":"tech"}],"next":"/api/tags/?limit=100&offset=100"}`))
+		} else {
+			w.Write([]byte(`{"results":[{"id":2,"name":"life"}],"next":""}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	got, err := c.ListTags()
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	if len(got) != 2 || got[0] != "tech" || got[1] != "life" {
+		t.Errorf("got %v, want [tech life]", got)
+	}
+}
+
+// TestScanRecentStopsEarly verifies that ScanRecent pages newest-first and
+// stops requesting once n matches are collected.
+func TestScanRecentStopsEarly(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		w.Write([]byte(`{"results":[` +
+			`{"id":1,"url":"https://a.example/","title":"A","tag_names":["inbox","tech"]},` +
+			`{"id":2,"url":"https://b.example/","title":"B","tag_names":["inbox"]},` +
+			`{"id":3,"url":"https://c.example/","title":"C","tag_names":["life"]}` +
+			`],"next":"/api/bookmarks/?limit=100&offset=100"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	got, err := c.ScanRecent(2, func(b Bookmark) bool {
+		for _, t := range b.TagNames {
+			if t == "tech" || t == "life" {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatalf("ScanRecent: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 3 {
+		t.Errorf("got %+v, want IDs [1 3]", got)
+	}
+	if pages != 1 {
+		t.Errorf("pages = %d, want 1 (early stop)", pages)
+	}
+}
+
+// TestUpdateTagsSendsFullTagSet verifies that UpdateTags PATCHes tag_names
+// as the complete set (the API replaces, not merges), alongside nothing else.
+func TestUpdateTagsSendsFullTagSet(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Write([]byte(`{"id":7,"tag_names":["inbox","tech"]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	updated, err := c.UpdateTags(7, []string{"inbox", "tech"})
+	if err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 field in PATCH body, got %v", got)
+	}
+	names, ok := got["tag_names"].([]any)
+	if !ok || len(names) != 2 || names[0] != "inbox" || names[1] != "tech" {
+		t.Errorf("tag_names = %v, want [inbox tech]", got["tag_names"])
+	}
+	if len(updated.TagNames) != 2 {
+		t.Errorf("updated tags = %v", updated.TagNames)
+	}
+}
+
 // TestUpdateTitleSendsTitleOnly verifies that UpdateTitle PATCHes just the
 // title field (so tags, notes, and dates survive) and truncates overlong
 // titles to linkding's 512 code point limit.

@@ -1,6 +1,7 @@
 // Command sync runs the bookmark-sync pipeline: it fetches open tabs from
-// Firefox Sync via ffsclient, deduplicates against linkding, runs LLM
-// summarization/tagging, and pushes new items to the linkding Inbox.
+// Firefox Sync via ffsclient, deduplicates against linkding, classifies each
+// tab with Clef (nearest existing tag, never creating new ones), and pushes
+// new items to the linkding Inbox.
 //
 // Configuration is read from the TOML config file
 // (default ~/.config/bookmark-sync/config.toml).
@@ -17,14 +18,14 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"time"
 
+	"bookmark-sync/internal/clef"
 	"bookmark-sync/internal/config"
 	"bookmark-sync/internal/expand"
 	"bookmark-sync/internal/filter"
 	"bookmark-sync/internal/linkding"
-	"bookmark-sync/internal/llm"
 	"bookmark-sync/internal/normalize"
 )
 
@@ -63,7 +64,8 @@ func main() {
 	// Dedup: load the set of existing bookmark URLs up front.
 	// IMPORTANT: we deliberately do NOT use the linkding /check API, because it
 	// fetches each URL's website metadata via requests.get(). That would make
-	// outbound requests to every open tab's site even when LLM is disabled.
+	// outbound requests to every open tab's site even when classification is
+	// disabled.
 	// The list API only reads the database and never touches external URLs.
 	rawURLs, err := client.ListBookmarkURLs()
 	if err != nil {
@@ -77,22 +79,37 @@ func main() {
 	}
 	log.Printf("loaded %d existing bookmark URL(s)", len(existing))
 
-	// LLM は既定で無効（config の [llm] enabled が false）。
-	// 無効時は要約・タグ生成を一切呼ばず、タイトル+URL+inbox タグだけで保存する。
-	llmEnabled := cfg.LLM.Enabled
-	var summarizer, tagger *llm.Provider
-	if llmEnabled {
-		summarizer = llm.NewProvider(
-			cfg.LLM.Summarize.BaseURL,
-			cfg.LLM.Summarize.APIKey,
-			cfg.LLM.Summarize.Model,
-		)
-		tagger = llm.NewProvider(
-			cfg.LLM.Tag.BaseURL,
-			cfg.LLM.Tag.APIKey,
-			cfg.LLM.Tag.Model,
-		)
+	// Clef は既定で無効（config の [clef] enabled が false）。
+	// 無効時は分類を一切呼ばず、タイトル+URL+inbox タグだけで保存する。
+	// 有効時は既存タグ一覧を先に取得し、新規タブに最も近い既存タグを付ける。
+	// 新規タグは作らない。
+	clefEnabled := cfg.Clef.Enabled
+	var classifier *clef.Client
+	var tagOptions []string
+	var budget *clef.Budget
+	if clefEnabled {
+		classifier = clef.New(cfg.Clef.AccountID, cfg.Clef.APIToken, cfg.Clef.Model)
+		allTags, err := client.ListTags()
+		if err != nil {
+			log.Fatalf("list tags: %v", err)
+		}
+		for _, t := range allTags {
+			if t == "inbox" || t == "title-truncated" {
+				continue
+			}
+			tagOptions = append(tagOptions, t)
+		}
+		log.Printf("loaded %d existing tag(s) for classification", len(tagOptions))
+
+		var budgetErr error
+		budget, budgetErr = clef.LoadBudget(filepath.Join(filepath.Dir(*configPath), "clef-usage.json"), cfg.Clef.DailyNeuronBudget, cfg.Clef.DailyRequestBudget)
+		if budgetErr != nil {
+			log.Fatalf("load budget: %v", budgetErr)
+		}
+		log.Printf("clef budget: %d/%d neurons, %d/%d requests used",
+			budget.Neurons, cfg.Clef.DailyNeuronBudget, budget.Requests, cfg.Clef.DailyRequestBudget)
 	}
+	budgetExhausted := false
 
 	created, skipped, failed := 0, 0, 0
 	for _, tab := range tabs {
@@ -141,32 +158,27 @@ func main() {
 			b.DateAdded = time.Unix(tab.LastUsedUnix, 0).UTC().Format("2006-01-02T15:04:05Z")
 		}
 
-		// LLM: summarization (skipped when [llm] enabled=false).
-		summary := ""
-		if llmEnabled {
-			var err error
-			summary, err = summarizer.Summarize(title, norm, cfg.LLM.SummarizePrompt)
-			if err != nil {
-				log.Printf("  summary failed for %q: %v", norm, err)
-				summary = "" // acceptable; continue with empty summary
-			}
-		}
-		b.Description = summary
-
-		// LLM: tag generation (skipped when [llm] enabled=false).
-		llmTags := []string{}
-		if llmEnabled {
-			var err error
-			llmTags, err = tagger.GenerateTags(title, norm, summary, cfg.LLM.TagPrompt)
-			if err != nil {
-				log.Printf("  tag generation failed for %q: %v", norm, err)
-				llmTags = nil
-			}
-		}
-		for _, t := range llmTags {
-			t = strings.TrimSpace(t)
-			if t != "" && t != "inbox" {
-				b.TagNames = append(b.TagNames, t)
+		// Clef: nearest-existing-tag classification
+		// (skipped when [clef] enabled=false, when fewer than 2 tags exist
+		// since a choice needs at least 2 options, or when the daily
+		// budget is exhausted — the bookmark is still created untagged).
+		if clefEnabled && len(tagOptions) >= 2 && !budgetExhausted {
+			state := "Title: " + title + "\nURL: " + norm
+			est := clef.EstimateNeurons(cfg.Clef.Model, state, tagOptions, cfg.Clef.Instructions)
+			if !budget.Allow(est) {
+				log.Printf("  clef budget exhausted, skipping remaining classifications")
+				budgetExhausted = true
+			} else {
+				res, err := classifier.Classify(state, tagOptions, cfg.Clef.Instructions)
+				if err != nil {
+					log.Printf("  classification failed for %q: %v", norm, err)
+				} else {
+					log.Printf("  classified %q -> %q (p=%.2f)", norm, res.Tag, res.Probability)
+					b.TagNames = append(b.TagNames, res.Tag)
+					if err := budget.Add(clef.ActualNeurons(cfg.Clef.Model, res.InputTokens)); err != nil {
+						log.Printf("  budget save failed: %v", err)
+					}
+				}
 			}
 		}
 

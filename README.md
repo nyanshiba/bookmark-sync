@@ -1,6 +1,6 @@
 # bookmark-sync
 
-Firefox Sync の開きタブを LLM で要約・タグ付けし、linkding の Inbox に自動投入するパイプライン。
+Firefox Sync の開きタブを Clef で分類し、linkding の Inbox に自動投入するパイプライン。
 
 > セットアップ・運用・トラブルシューティングの詳細は [SETUP.md](SETUP.md) を参照。
 
@@ -9,7 +9,7 @@ Firefox Sync の開きタブを LLM で要約・タグ付けし、linkding の I
 - **ブラウザブックマークを共通規格として維持**: 日常運用は linkding（セルフホスト、API でアクセス）。Netscape HTML エクスポートはロックイン回避の避難口。
 - **手動ブックマークのボトルネックを解消**: タブは全量自動で Inbox に投入。人間は週次のレビューで「残す／捨てる」だけ。
 - **sync は開きタブのみを処理**: `bookmark-sync-sync` は `ffsclient tabs list`（Firefox Sync の開きタブ）だけを入力とする。Firefox ブックマーク（`bookmarks list`）とは比較・同期しない。ブックマークの移行は `bookmark-sync-import`（一度きり）が担当し、両者は独立。
-- **LLM は「読むコストを下げる」役**: 各タブに一行要約＋タグ候補を自動付与。価値判断は人間。
+- **Clef は「読むコストを下げる」役**: 各タブに既存タグから最も近いものを自動付与（新規タグは作らない）。価値判断は人間。
 - **拡張・サーバー常駐不要**: バッチパイプライン（Go 単一バイナリ）が systemd timer で定期実行。
 
 ## 全体像
@@ -22,7 +22,7 @@ bookmark-sync-sync (Go)
   ├── URL 正規化・重複排除（一覧 API で一括取得、ローカル判定）
   ├── タイトル内の短縮 URL 展開（t.co）
   ├── ドメインブロックリスト
-  ├── LLM 要約（ローカル llama.cpp / クラウド / 機能別切替）
+  ├── Clef 分類（既存タグから最も近いものを付与、新規タグなし）
   └── linkding API → 📥Inbox
          │
          ▼
@@ -37,7 +37,7 @@ bookmark-sync-sync (Go)
 - Linux（systemd 対応）
 - Go 1.23 以降（ビルド時のみ）
 - Docker / Docker Compose（linkding）
-- ローカル LLM を使う場合は [llama.cpp](https://github.com/ggml-org/llama.cpp)（llama-server）
+- Cloudflare アカウント（Clef 分類用。無料枠は 1 日 10,000 Neurons。目安は SETUP.md 5.2 の表を参照）
 - Firefox アカウント（Firefox Sync 利用中）
 
 ## クイックスタート
@@ -80,7 +80,7 @@ sudo systemctl enable --now bookmark-sync.timer
 
 1. タブが溜まってきたら linkding の Web UI を開く
 2. `tag:inbox` で検索 → 「未レビューの Inbox」一覧
-3. タイトル + 要約を読んで判断:
+3. タイトル + タグを読んで判断:
    - **残す**: `inbox` タグをはずし、必要ならタグを編集
    - **捨てる**: 削除
 4. ブラウザに戻って Firefox View の「他デバイスのタブ」から開いているタブを一括クローズ（Inbox に保全済みなので安心）
@@ -116,13 +116,15 @@ bookmark-sync/
 │   ├─ import/main.go             # 既存ブックマーク取り込み（一度きり）
 │   ├─ restore-tabs/main.go       # sessionstore → linkding 復元（一度きり）
 │   ├─ expand-titles/main.go      # 既存タイトル内の短縮 URL 展開（一度きり）
+│   ├─ classify-tags/main.go      # 既存 inbox の Clef 遡及分類（予算内で繰り返し）
 │   └─ sync/main.go               # 定期パイプライン
 ├─ internal/
 │   ├─ config/config.go           # TOML 設定読み込み
 │   ├─ linkding/client.go         # linkding REST API クライアント
 │   ├─ normalize/url.go           # URL 正規化・重複排除
 │   ├─ expand/expand.go             # タイトル内の短縮 URL 展開
-│   ├─ llm/provider.go            # LLM OpenAI 互換クライアント
+│   ├─ clef/clef.go               # Clef 判定クライアント（Workers AI 直結）
+│   ├─ clef/budget.go             # 日次予算（Neurons・件数、sync と遡及で共有）
 │   ├─ filter/filter.go           # ドメインブロックリスト
 │   ├─ bookmark/parser.go         # Netscape HTML 解析
 │   └─ sessionstore/sessionstore.go   # sessionstore 解析

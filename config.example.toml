@@ -10,45 +10,31 @@ base_url = "http://localhost:9090"
 # linkding の「設定 → APIトークン」で発行したトークン
 api_token = "YOUR_LINKDING_API_TOKEN"
 
-[llm]
-# 明示的に有効化する場合は enabled = true にする。
-# 無効時は要約・タグ生成を一切行わず、タイトル + URL + inbox タグだけで保存する。
+[clef]
+# Jevモドキによるタグ分類を使う場合は enabled = true にする。
+# 無効時は分類を一切行わず、タイトル + URL + inbox タグだけで保存する。
 # 既定（省略時）は false（無効）。
-enabled = false
+enabled = true
 
-# 機能ごとにプロバイダを差し替えられる。
-# ローカルは llama.cpp (llama-server) の OpenAI 互換エンドポイント。
+# 取得手順:
+#   1. Cloudflare ダッシュボード → Workers AI →「Use REST API」
+#   2. 「Create a Workers AI API Token」→ api_token を控える
+#   3. 同画面の「Get Account ID」→ account_id に控える
+# 手動発行時は Workers AI Read + Edit 権限。単価・日数の目安は SETUP.md 5.2 の表を参照。
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+api_token = "YOUR_CLOUDFLARE_API_TOKEN"
 
-# 要約プロンプト（{{.Title}} / {{.URL}} が置換される）
-summarize_prompt = """
-You are a helpful assistant. Summarize the following web page in one or two sentences in Japanese. Focus on what makes it worth bookmarking.
+# model は "clef-flash"（9B、速い・安い）または "clef"（27B、高精度）。
+model = "clef-flash"
 
-Title: {{.Title}}
-URL: {{.URL}}
+# 分類の指示文（Clef の choice 質問として送られる）。
+# 新規タグは作らず、既存タグから最も近いものを一つ選ぶ動作は変えないこと。
+instructions = "Pick the single tag whose meaning is closest to this bookmark. Answer with the nearest existing tag only."
 
-Summary:"""
-
-# タグ生成プロンプト（{{.Title}} / {{.URL}} / {{.Summary}} が置換される）
-tag_prompt = """
-You are a helpful assistant. Generate 2-5 relevant tags for the following web page. Tags should be single words or short phrases in Japanese. Return them as a comma-separated list.
-
-Title: {{.Title}}
-URL: {{.URL}}
-Summary: {{.Summary}}
-
-Tags:"""
-
-# 要約用プロバイダ
-[llm.summarize]
-base_url = "http://127.0.0.1:8080/v1"   # llama-server のデフォルト
-api_key = ""                            # ローカルは空でOK
-model = "llama-3.1-8b"
-
-# タグ生成用プロバイダ（別プロバイダを指定してもよい）
-[llm.tag]
-base_url = "http://127.0.0.1:8080/v1"
-api_key = ""
-model = "llama-3.1-8b"
+# 日次上限（sync と classify-tags で共有、先に達したら分類のみ停止）。
+# 使用量は config と同階層の clef-usage.json に記録、00:00 UTC リセット。0 は無制限。
+daily_neuron_budget = 9000
+daily_request_budget = 0
 
 [sync]
 # ffsclient (Mikescher/firefox-sync-client) の絶対パス（推奨）またはコマンド名
