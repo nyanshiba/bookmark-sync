@@ -332,24 +332,26 @@ choice の選択肢上限は 255 のため、既存タグがそれを超える�
 #### 予算の決め方
 
 この章では1日の分類上限2つを決める。上限は金額（Neurons）と件数の二本立てで、
-`sync` と遡及コマンドが共有する。使用量は `clef-usage.json` に記録され、
+`bookmark-sync` と `bookmark-sync-classify-tags` が共有する。使用量は `clef-usage.json` に記録され、
 00:00 UTC にリセットされる。到達時は分類だけ止まり、ブックマーク自体の作成は続く。
 無料枠は 1日10,000 Neurons で、枠超過分だけ $0.011/1,000 Neurons が課金される。
 
-1件あたりの実測（`-eval` 50件のダッシュボード値、単位 Neurons/件）:
-flash 460.01/50 = 9.2/件、clef 1260/50 = 25.2/件。
+1件あたりの実測（ダッシュボード値、単位 Neurons/件）:
+flash 4190/1066 ≈ 3.9/件、clef 1260/50 = 25.2/件。
 式 `1件 = 入力トークン × 単価/100万` に入力約1100トークンを入れると
-flash 1100×8182/100万 ≈ 9.0、clef 1100×21818/100万 ≈ 24.0 で実測と一致する。
+flash 1100×3455/100万 ≈ 3.8、clef 1100×21818/100万 ≈ 24.0 で実測と一致する。
+単価は Workers AI 料金表の値（flash $0.038/100万トークン→3455、
+clef $0.240/100万トークン→21818。flash は2026年10月に値下げ）。
 1件値はタグ数で変わるため、自環境では `-eval 50` で確かめる
-（書き込みなし、予算消費あり。ダッシュボードの Neurons/50 が1件値。手順は 13.9）。
+（書き込みなし、予算消費あり。ダッシュボードの Neurons/件数が1件値。手順は 13.9）。
 
 | モデル | 1件実測 | `daily_request_budget` | `daily_neuron_budget` | 1万件処理する際のコスト |
 |---|---|---|---|---|
-| `clef-flash` | 9.2 Neurons/件 | 1日件数（例: 980件なら `980`） | 1日件数×9.2（例: `9000`） | 約10日・総額約$1.0 |
+| `clef-flash` | 3.9 Neurons/件 | 1日件数（例: 2300件なら `2300`） | 1日件数×3.9（例: `9000`） | 約5日・総額約$0.4 |
 | `clef` | 25.2 Neurons/件 | 1日件数（例: 360件なら `360`） | 1日件数×25.2（例: `9000`） | 約28日・総額約$2.8 |
 
 両方書くと先に達した方が止める。件数だけで縛るなら request 側だけ書く。
-9000も10000（無料枠上限。例: flash 約1090件・約9日、clef 約400件・約25日）も
+9000も10000（無料枠上限。例: flash 約2560件・約4日、clef 約400件・約25日）も
 無料枠内のため日額は$0。枠超過分だけ課金される
 （例: clef 1万件を1日で処理なら超過約24万 Neurons で約$2.6）。
 
@@ -1089,8 +1091,8 @@ sudo -u bookmark-sync /home/bookmark-sync/bin/bookmark-sync-classify-tags \
 # loaded 48 existing tag(s) for classification
 # found 10213 unclassified inbox bookmark(s)
 #   [12345] "Example" -> "tech" (p=0.80)
-# budget exhausted (9005/9000 neurons, 970/0 requests), stopping
-# done: 970 updated, 0 failed (budget: 9005/9000 neurons, 970/0 requests)
+# budget exhausted (9000/9000 neurons, 2250/0 requests), stopping
+# done: 2250 updated, 0 failed (budget: 9000/9000 neurons, 2250/0 requests)
 ```
 
 #### モデル選定（clef-flash と clef の比較）

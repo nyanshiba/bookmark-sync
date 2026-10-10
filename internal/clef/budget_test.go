@@ -57,6 +57,18 @@ func TestBudgetPersistence(t *testing.T) {
 	}
 }
 
+// TestActualNeuronsRounding verifies the per-request debit rounds to
+// nearest: truncation would record 3 for a typical flash call and
+// undercount ~25% against the dashboard.
+func TestActualNeuronsRounding(t *testing.T) {
+	if got := ActualNeurons("clef-flash", 1124); got != 4 {
+		t.Errorf("ActualNeurons(flash, 1124) = %d, want 4", got)
+	}
+	if got := ActualNeurons("clef", 1124); got != 25 {
+		t.Errorf("ActualNeurons(clef, 1124) = %d, want 25", got)
+	}
+}
+
 // TestEstimateNeuronsSanity verifies the estimator stays in the low single
 // digits per request for a realistic bookmark against 100 tags.
 func TestEstimateNeuronsSanity(t *testing.T) {

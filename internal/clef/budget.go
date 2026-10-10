@@ -9,10 +9,12 @@ import (
 )
 
 // inputNeuronsPerM maps Clef models to their Workers AI neuron rates
-// (neurons per million input tokens). Unknown models fall back to the
-// highest rate so estimates stay on the safe side.
+// (neurons per million input tokens, from the Workers AI pricing table).
+// clef-flash was cut to 3455 in 2026-10 ($0.038/M); clef stays at 21818
+// ($0.240/M). Unknown models fall back to the highest rate so estimates
+// stay on the safe side.
 var inputNeuronsPerM = map[string]int{
-	"clef-flash": 8182,
+	"clef-flash": 3455,
 	"clef":       21818,
 }
 
@@ -42,9 +44,12 @@ func EstimateNeurons(model, state string, options []string, instructions string)
 	return tokens * InputNeuronsPerM(model) / 1000000
 }
 
-// ActualNeurons converts reported input tokens to neurons for the model.
+// ActualNeurons converts reported input tokens to neurons for the model,
+// rounding to nearest. Per-request values are single digits now
+// (clef-flash ≈ 4), so truncation would undercount ~25% and let usage
+// overshoot the free tier.
 func ActualNeurons(model string, inputTokens int) int {
-	return inputTokens * InputNeuronsPerM(model) / 1000000
+	return (inputTokens*InputNeuronsPerM(model) + 500000) / 1000000
 }
 
 // Budget tracks daily Clef usage against configured caps shared by the sync
